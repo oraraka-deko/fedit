@@ -64,19 +64,23 @@ class _RepoBrowserState extends State<RepoBrowser> {
       ).then(
         (_) => setState(() {}),
       ); // Re-build on return to refresh checkboxes
-   } else if (entity is File) {
-  Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => EditorWithExplorerShell(
-        projectRoot: Directory(widget.path),
-        initialFile: entity,
-        editorBuilder: (file) => AdvancedCodeEditor(file: file),
-        aisidebar: widget.aiSidebarBuilder(),
-      ),
-    ),
-  );
-}}
+    } else if (entity is File) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EditorWithExplorerShell(
+            projectRoot: Directory(widget.path),
+            initialFile: entity,
+            editorBuilder: (file, {tabId, isActive}) => AdvancedCodeEditor(
+              file: file,
+              tabId: tabId,
+              isActive: isActive,
+            ),
+            aisidebar: widget.aiSidebarBuilder(),
+          ),
+        ),
+      );
+    }}
 
   void _toggleSelection(String path) {
     setState(() {

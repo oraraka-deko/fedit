@@ -8,15 +8,18 @@ import 'dynamic_code_editor_tab_bar.dart';
 class OpenDocument {
   final EditorTabItem tab;
   final File? file;
+  int lastActiveLine;
 
-  const OpenDocument({
+  OpenDocument({
     required this.tab,
     this.file,
+    this.lastActiveLine = 0,
   });
 }
 
 class EditorSessionManager extends ChangeNotifier {
   final List<OpenDocument> _documents = [];
+  final Map<String, int> _lastActiveLinesByPath = {};
   String _activeTabId = '';
 
   List<OpenDocument> get documents => List.unmodifiable(_documents);
@@ -29,6 +32,37 @@ class EditorSessionManager extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  void saveLastActiveLine(String tabId, int line) {
+    final index = _documents.indexWhere((doc) => doc.tab.id == tabId);
+    if (index != -1) {
+      _documents[index].lastActiveLine = line;
+      final file = _documents[index].file;
+      if (file != null) {
+        _lastActiveLinesByPath[file.path] = line;
+      }
+    }
+  }
+
+  int getLastActiveLine(String tabId) {
+    final index = _documents.indexWhere((doc) => doc.tab.id == tabId);
+    if (index != -1) {
+      return _documents[index].lastActiveLine;
+    }
+    return 0;
+  }
+
+  void saveLastActiveLineForFile(String filePath, int line) {
+    _lastActiveLinesByPath[filePath] = line;
+    final index = _documents.indexWhere((doc) => doc.file?.path == filePath);
+    if (index != -1) {
+      _documents[index].lastActiveLine = line;
+    }
+  }
+
+  int getLastActiveLineForFile(String filePath) {
+    return _lastActiveLinesByPath[filePath] ?? 0;
   }
 
   void openFile(File file) {
@@ -46,7 +80,8 @@ class EditorSessionManager extends ChangeNotifier {
       filePath: file.path,
     );
 
-    _documents.add(OpenDocument(tab: tab, file: file));
+    final savedLine = _lastActiveLinesByPath[file.path] ?? 0;
+    _documents.add(OpenDocument(tab: tab, file: file, lastActiveLine: savedLine));
     _activeTabId = tabId;
     notifyListeners();
   }
@@ -72,6 +107,11 @@ class EditorSessionManager extends ChangeNotifier {
   void closeTab(String tabId) {
     final index = _documents.indexWhere((doc) => doc.tab.id == tabId);
     if (index == -1) return;
+
+    final doc = _documents[index];
+    if (doc.file != null) {
+      _lastActiveLinesByPath[doc.file!.path] = doc.lastActiveLine;
+    }
 
     _documents.removeAt(index);
 

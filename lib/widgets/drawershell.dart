@@ -6,9 +6,15 @@ import 'dynamic_code_editor_tab_bar.dart';
 import 'editor_session_manager.dart';
 import 'session_scope.dart';
 
+typedef EditorWidgetBuilder = Widget Function(
+  File file, {
+  String? tabId,
+  bool? isActive,
+});
+
 class EditorWithExplorerShell extends StatefulWidget {
   final Directory projectRoot;
-  final Widget Function(File file) editorBuilder;
+  final Function editorBuilder;
   final Widget aisidebar;
   final File? initialFile;
 
@@ -48,6 +54,23 @@ class _EditorWithExplorerShellState extends State<EditorWithExplorerShell> {
     super.dispose();
   }
 
+  Widget _buildEditor(File file, {String? tabId, bool? isActive}) {
+    if (widget.editorBuilder is Widget Function(File, {String? tabId, bool? isActive})) {
+      return (widget.editorBuilder as Widget Function(File, {String? tabId, bool? isActive}))(
+        file,
+        tabId: tabId,
+        isActive: isActive,
+      );
+    } else if (widget.editorBuilder is Widget Function(File)) {
+      return (widget.editorBuilder as Widget Function(File))(file);
+    }
+    try {
+      return (widget.editorBuilder as dynamic)(file, tabId: tabId, isActive: isActive) as Widget;
+    } catch (_) {
+      return (widget.editorBuilder as dynamic)(file) as Widget;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return SessionScope(
@@ -57,8 +80,12 @@ class _EditorWithExplorerShellState extends State<EditorWithExplorerShell> {
         builder: (context, _) {
           final session = SessionScope.of(context);
           final activeTab = session.activeDocument?.tab;
-          final activeFile = session.activeDocument?.file;
-          final editorWidget = activeFile == null
+
+          final activeIndex = session.documents
+              .indexWhere((d) => d.tab.id == session.activeTabId);
+          final safeIndex = activeIndex == -1 ? 0 : activeIndex;
+
+          final Widget editorBody = session.documents.isEmpty
               ? const Center(
                   child: Text(
                     "No file selected\nOpen a file or create a new tab",
@@ -66,7 +93,28 @@ class _EditorWithExplorerShellState extends State<EditorWithExplorerShell> {
                     style: TextStyle(color: Colors.white54),
                   ),
                 )
-              : widget.editorBuilder(activeFile);
+              : IndexedStack(
+                  index: safeIndex,
+                  children: [
+                    for (final doc in session.documents)
+                      KeyedSubtree(
+                        key: ValueKey(doc.tab.id),
+                        child: doc.file == null
+                            ? const Center(
+                                child: Text(
+                                  "No file selected\nOpen a file or create a new tab",
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.white54),
+                                ),
+                              )
+                            : _buildEditor(
+                                doc.file!,
+                                tabId: doc.tab.id,
+                                isActive: doc.tab.id == session.activeTabId,
+                              ),
+                      ),
+                  ],
+                );
 
           final mainEditorPane = Column(
             children: [
@@ -79,12 +127,7 @@ class _EditorWithExplorerShellState extends State<EditorWithExplorerShell> {
                   onTabsReordered: session.reorderTabs,
                   onNewTab: session.openNewEmptyTab,
                 ),
-              Expanded(
-                child: KeyedSubtree(
-                  key: ValueKey(activeTab?.id ?? 'empty'),
-                  child: editorWidget,
-                ),
-              ),
+              Expanded(child: editorBody),
             ],
           );
 
@@ -217,3 +260,4 @@ class _ResizeHandle extends StatelessWidget {
     );
   }
 }
+
