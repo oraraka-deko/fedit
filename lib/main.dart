@@ -10,8 +10,10 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:git2dart/git2dart.dart';
 
 import 'entries.dart';
+import 'models/git_models.dart';
 import 'recent_projects_store.dart';
 import 'repo_loader.dart';
+import 'screens/git_screen.dart';
 import 'screens/pkg_search_screen.dart';
 import 'utils/colors.dart';
 import 'widgets/repo_browser_scaffold.dart';
@@ -166,6 +168,16 @@ class _RemoteLoaderPageState extends State<RemoteLoaderPage>
       MethodChannel('gitloader/storage_permission');
 
   final TextEditingController _urlController = TextEditingController();
+  final TextEditingController _branchController = TextEditingController();
+  final TextEditingController _tagController = TextEditingController();
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _tokenController = TextEditingController();
+
+  bool _obscureToken = true;
+  bool _showAdvancedOptions = false;
+  bool _useExternalStorage = false;
+  String? _customExternalPath;
+
   bool _isLoading = false;
   double _downloadProgress = 0.0;
   String? _statusMessage;
@@ -189,53 +201,33 @@ class _RemoteLoaderPageState extends State<RemoteLoaderPage>
     await _loadRecents();
   }
 
-  Future<String?> _selectStorageBasePath() async {
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Choose storage location'),
-        content: const Text(
-          'Where should the downloaded repository be stored?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final dir = await getApplicationDocumentsDirectory();
-              if (ctx.mounted) Navigator.of(ctx).pop(dir.path);
-            },
-            child: const Text('Internal (app data)'),
-          ),
-          TextButton(
-            onPressed: () async {
-              var status = await Permission.manageExternalStorage.status;
-if (!status.isDenied) {
+  Future<void> _pickExternalFolder() async {
+    try {
+      final status = await Permission.manageExternalStorage.status;
+      if (status.isDenied) {
+        final req = await Permission.manageExternalStorage.request();
+        if (!req.isGranted && mounted) {
+          final ensured = await _ensureAndroidStorageAccess();
+          if (!ensured) return;
+        }
+      }
 
-
-
-              final path = await FilePicker.platform.getDirectoryPath(
-                dialogTitle: 'Select a folder to store the repo',
-              );
-              if (ctx.mounted) Navigator.of(ctx).pop(path);
-            }
-            else {
-           final req=   await Permission.manageExternalStorage.request();
-           if (req.isGranted){
-              final path = await FilePicker.platform.getDirectoryPath(
-                dialogTitle: 'Select a folder to store the repo',
-              );
-              if (ctx.mounted) Navigator.of(ctx).pop(path);
-           }
-            }
-            },
-            child: const Text('Pick folder'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(null),
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
+      final path = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select storage directory for Git repositories',
+      );
+      if (path != null && mounted) {
+        setState(() {
+          _customExternalPath = path;
+          _useExternalStorage = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to pick directory: $e')),
+        );
+      }
+    }
   }
 
   Future<_ConflictResolution?> _resolveConflict(
@@ -378,6 +370,10 @@ if (!status.isDenied) {
     WidgetsBinding.instance.removeObserver(this);
     _resumeCompleter?.complete();
     _urlController.dispose();
+    _branchController.dispose();
+    _tagController.dispose();
+    _usernameController.dispose();
+    _tokenController.dispose();
     super.dispose();
   }
 
@@ -483,12 +479,20 @@ if (!status.isDenied) {
 
   void _loadRepo() async {
     final url = _urlController.text.trim();
-    if (url.isEmpty) return;
-
-    final storagePath = await _selectStorageBasePath();
-    if (storagePath == null) {
-      setState(() => _statusMessage = "Storage selection cancelled");
+    if (url.isEmpty) {
+      setState(() => _statusMessage = "Please enter a valid Git repository URL");
       return;
+    }
+
+    String storagePath;
+    if (_useExternalStorage) {
+      if (_customExternalPath != null && _customExternalPath!.isNotEmpty) {
+        storagePath = _customExternalPath!;
+      } else {
+        storagePath = await RepoUtils.getExternalStoragePath();
+      }
+    } else {
+      storagePath = await RepoUtils.getInternalStoragePath();
     }
 
     final requiresAllFilesAccess =
@@ -503,7 +507,7 @@ if (!status.isDenied) {
     while (await Directory(destinationPath).exists()) {
       final resolution = await _resolveConflict(storagePath, folderName);
       if (resolution == null || resolution.action == _ConflictAction.cancel) {
-        setState(() => _statusMessage = "Download cancelled");
+        setState(() => _statusMessage = "Clone cancelled");
         return;
       }
       if (resolution.action == _ConflictAction.replace) {
@@ -518,10 +522,28 @@ if (!status.isDenied) {
       }
     }
 
+    final branch = _branchController.text.trim().isNotEmpty
+        ? _branchController.text.trim()
+        : null;
+    final tag = _tagController.text.trim().isNotEmpty
+        ? _tagController.text.trim()
+        : null;
+
+    AuthSpec? authSpec;
+    final username = _usernameController.text.trim();
+    final token = _tokenController.text.trim();
+    if (username.isNotEmpty || token.isNotEmpty) {
+      authSpec = AuthSpec(
+        mode: AuthMode.httpsUserPass,
+        username: username.isNotEmpty ? username : 'git',
+        password: token,
+      );
+    }
+
     setState(() {
       _isLoading = true;
       _downloadProgress = 0.0;
-      _statusMessage = "Downloading repository snapshot...";
+      _statusMessage = "Cloning repository in background...";
     });
 
     try {
@@ -529,11 +551,17 @@ if (!status.isDenied) {
         url,
         targetDirPath: storagePath,
         folderName: folderName,
+        branch: branch,
+        tag: tag,
+        authSpec: authSpec,
         overwriteExisting: false,
-        onProgress: (progress) {
+        onProgress: (progress, status) {
           if (!mounted) return;
           setState(() {
             _downloadProgress = progress.clamp(0.0, 1.0);
+            if (status != null && status.isNotEmpty) {
+              _statusMessage = status;
+            }
           });
         },
       );
@@ -605,16 +633,330 @@ if (!status.isDenied) {
     }
   }
 
+  Widget _buildStorageSelector() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.sd_storage_outlined, size: 18, color: AppColors.accent),
+              SizedBox(width: 8),
+              Text(
+                'Storage Destination',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ChoiceChip(
+                  label: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.lock_outline, size: 14),
+                      SizedBox(width: 6),
+                      Text('Internal Storage'),
+                    ],
+                  ),
+                  selected: !_useExternalStorage,
+                  onSelected: (selected) {
+                    if (selected) {
+                      setState(() => _useExternalStorage = false);
+                    }
+                  },
+                  selectedColor: AppColors.accent.withValues(alpha: 0.2),
+                  backgroundColor: AppColors.surface2,
+                  labelStyle: TextStyle(
+                    fontSize: 12,
+                    color: !_useExternalStorage
+                        ? Colors.white
+                        : AppColors.textSecondary,
+                    fontWeight: !_useExternalStorage
+                        ? FontWeight.w700
+                        : FontWeight.w500,
+                  ),
+                  side: BorderSide(
+                    color: !_useExternalStorage
+                        ? AppColors.accent
+                        : AppColors.border,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ChoiceChip(
+                  label: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.folder_shared_outlined, size: 14),
+                      SizedBox(width: 6),
+                      Text('External Storage'),
+                    ],
+                  ),
+                  selected: _useExternalStorage,
+                  onSelected: (selected) {
+                    if (selected) {
+                      setState(() => _useExternalStorage = true);
+                      if (_customExternalPath == null) {
+                        _pickExternalFolder();
+                      }
+                    }
+                  },
+                  selectedColor: AppColors.accent.withValues(alpha: 0.2),
+                  backgroundColor: AppColors.surface2,
+                  labelStyle: TextStyle(
+                    fontSize: 12,
+                    color: _useExternalStorage
+                        ? Colors.white
+                        : AppColors.textSecondary,
+                    fontWeight: _useExternalStorage
+                        ? FontWeight.w700
+                        : FontWeight.w500,
+                  ),
+                  side: BorderSide(
+                    color: _useExternalStorage
+                        ? AppColors.accent
+                        : AppColors.border,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_useExternalStorage) ...[
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: _pickExternalFolder,
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.surface2,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.folder_open, size: 16, color: AppColors.accent),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _customExternalPath ?? 'Default External Storage (Tap to change folder)',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Icon(Icons.edit_outlined, size: 14, color: AppColors.accent),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAdvancedOptionsSection() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () {
+              setState(() {
+                _showAdvancedOptions = !_showAdvancedOptions;
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.tune, size: 18, color: AppColors.accent),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Advanced Options (Branch, Tag, Auth)',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _showAdvancedOptions
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: AppColors.textSecondary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_showAdvancedOptions) ...[
+            const Divider(color: AppColors.border, height: 1),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _branchController,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textPrimary,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Branch',
+                            hintText: 'e.g. main, dev',
+                            prefixIcon: const Icon(Icons.fork_right, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 10,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _tagController,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textPrimary,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Tag',
+                            hintText: 'e.g. v1.0.0',
+                            prefixIcon: const Icon(Icons.label_outline, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 10,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _usernameController,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textPrimary,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Username',
+                            hintText: 'git or username',
+                            prefixIcon: const Icon(Icons.person_outline, size: 18),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 10,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _tokenController,
+                          obscureText: _obscureToken,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textPrimary,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Token / Password',
+                            hintText: 'PAT or password',
+                            prefixIcon: const Icon(Icons.key_outlined, size: 18),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _obscureToken
+                                    ? Icons.visibility
+                                    : Icons.visibility_off,
+                                size: 18,
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _obscureToken = !_obscureToken;
+                                });
+                              },
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 10,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-       leading: IconButton(
-             icon: const Icon(Icons.terminal),
-             onPressed: () {   
-                                  
-             },
-           ),
+        leading: IconButton(
+          icon: const Icon(Icons.terminal),
+          tooltip: 'Git2Dart Diagnostic Studio',
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const Git2DartDemoHome(),
+              ),
+            );
+          },
+        ),
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -663,6 +1005,10 @@ if (!status.isDenied) {
                   ),
                 ),
               ),
+              const SizedBox(height: 14),
+              _buildStorageSelector(),
+              const SizedBox(height: 14),
+              _buildAdvancedOptionsSection(),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,

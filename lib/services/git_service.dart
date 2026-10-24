@@ -76,27 +76,58 @@ class GitService {
     required String url,
     required String localPath,
     String? branch,
+    String? tag,
     AuthSpec? authSpec,
     GitAuthor? author,
+    void Function(double progress, String? status)? onProgress,
   }) async {
     final spec = authSpec ?? const AuthSpec.none();
-    await Isolate.run(() {
-      final callbacks = spec.toCallbacks();
-      final repo = Repository.clone(
-        url: url,
-        localPath: localPath,
-        checkoutBranch: branch,
-        callbacks: callbacks,
+    if (onProgress == null) {
+      await Isolate.run(() {
+        _performClone(
+          url: url,
+          localPath: localPath,
+          branch: branch,
+          tag: tag,
+          spec: spec,
+          author: author,
+        );
+      });
+      return;
+    }
+
+    final receivePort = ReceivePort();
+    try {
+      await Isolate.spawn(
+        _cloneWorker,
+        _CloneWorkerArgs(
+          url: url,
+          localPath: localPath,
+          branch: branch,
+          tag: tag,
+          spec: spec,
+          author: author,
+          sendPort: receivePort.sendPort,
+        ),
       );
-      try {
-        final config = repo.config;
-        final auth = author ?? GitAuthor.defaultAuthor;
-        config['user.name'] = auth.name;
-        config['user.email'] = auth.email;
-      } finally {
-        repo.free();
+
+      await for (final msg in receivePort) {
+        if (msg is Map) {
+          final type = msg['type'];
+          if (type == 'progress') {
+            final double p = (msg['progress'] as num).toDouble();
+            final String? s = msg['status'] as String?;
+            onProgress(p, s);
+          } else if (type == 'done') {
+            break;
+          } else if (type == 'error') {
+            throw Exception(msg['message'] ?? 'Clone failed');
+          }
+        }
       }
-    });
+    } finally {
+      receivePort.close();
+    }
   }
 
   // ===========================================================================
@@ -1770,4 +1801,125 @@ class GitService {
     });
   }
 }
+
+class _CloneWorkerArgs {
+  const _CloneWorkerArgs({
+    required this.url,
+    required this.localPath,
+    this.branch,
+    this.tag,
+    required this.spec,
+    this.author,
+    required this.sendPort,
+  });
+
+  final String url;
+  final String localPath;
+  final String? branch;
+  final String? tag;
+  final AuthSpec spec;
+  final GitAuthor? author;
+  final SendPort sendPort;
+}
+
+void _cloneWorker(_CloneWorkerArgs args) {
+  try {
+    args.sendPort.send({
+      'type': 'progress',
+      'progress': 0.05,
+      'status': 'Connecting to remote repository...',
+    });
+
+    final callbacks = args.spec.toCallbacks(
+      transferProgress: (tp) {
+        if (tp.totalObjects > 0) {
+          final ratio = (tp.receivedObjects / tp.totalObjects).clamp(0.0, 1.0);
+          args.sendPort.send({
+            'type': 'progress',
+            'progress': 0.05 + ratio * 0.85,
+            'status':
+                'Receiving objects: ${tp.receivedObjects}/${tp.totalObjects} (${(ratio * 100).toInt()}%)',
+          });
+        }
+      },
+      sidebandProgress: (msg, len, _) {
+        final trimmed = msg.trim();
+        if (trimmed.isNotEmpty) {
+          args.sendPort.send({
+            'type': 'progress',
+            'progress': 0.5,
+            'status': trimmed,
+          });
+        }
+      },
+    );
+
+    final repo = Repository.clone(
+      url: args.url,
+      localPath: args.localPath,
+      checkoutBranch: args.branch,
+      callbacks: callbacks,
+    );
+    try {
+      if (args.tag != null && args.tag!.isNotEmpty) {
+        args.sendPort.send({
+          'type': 'progress',
+          'progress': 0.95,
+          'status': 'Checking out tag ${args.tag}...',
+        });
+        final refName = 'refs/tags/${args.tag}';
+        Checkout.reference(
+          repo: repo,
+          name: refName,
+          strategy: const {GitCheckout.force},
+        );
+        repo.setHead(refName);
+      }
+      final config = repo.config;
+      final auth = args.author ?? GitAuthor.defaultAuthor;
+      config['user.name'] = auth.name;
+      config['user.email'] = auth.email;
+    } finally {
+      repo.free();
+    }
+    args.sendPort.send({'type': 'done'});
+  } catch (e) {
+    args.sendPort.send({'type': 'error', 'message': e.toString()});
+  }
+}
+
+void _performClone({
+  required String url,
+  required String localPath,
+  String? branch,
+  String? tag,
+  required AuthSpec spec,
+  GitAuthor? author,
+}) {
+  final callbacks = spec.toCallbacks();
+  final repo = Repository.clone(
+    url: url,
+    localPath: localPath,
+    checkoutBranch: branch,
+    callbacks: callbacks,
+  );
+  try {
+    if (tag != null && tag.isNotEmpty) {
+      final refName = 'refs/tags/$tag';
+      Checkout.reference(
+        repo: repo,
+        name: refName,
+        strategy: const {GitCheckout.force},
+      );
+      repo.setHead(refName);
+    }
+    final config = repo.config;
+    final auth = author ?? GitAuthor.defaultAuthor;
+    config['user.name'] = auth.name;
+    config['user.email'] = auth.email;
+  } finally {
+    repo.free();
+  }
+}
+
 
