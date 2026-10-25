@@ -377,7 +377,7 @@ class _ConfigEditorState extends State<ConfigEditor> {
               const SizedBox(height: 16),
               if (_availableModels.isNotEmpty && !_allowCustomModel)
                 DropdownButtonFormField<String>(
-                  value: _selectedModel ?? _availableModels.first,
+                  initialValue: _selectedModel ?? _availableModels.first,
                   decoration: const InputDecoration(labelText: 'Current Model'),
                   isExpanded: true,
                   items: _availableModels

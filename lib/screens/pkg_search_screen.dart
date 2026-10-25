@@ -566,8 +566,8 @@ class _GoPackageSearchPageState extends State<GoPackageSearchPage> {
         version: version,
         published: updated,
         meta: {
-          if (allTime != null) 'all_time': allTime,
-          if (recent != null) 'recent': recent,
+          'all_time': ?allTime,
+          'recent': ?recent,
         },
       ));
     }
@@ -1178,7 +1178,7 @@ class _SearchSkeleton extends StatelessWidget {
     return ListView.separated(
       padding: _adaptivePagePadding(context),
       itemCount: 8,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         return Card(
           child: Padding(

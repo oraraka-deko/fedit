@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'env.dart';
 /// Sends a log message to a specified Telegram chat via the Bot API.
@@ -40,12 +41,16 @@ Future<bool> sendTelegramLog(
 
       if (response.statusCode != 200) {
         // HTTP errors (e.g., rate-limiting 429, invalid token 401, blocked bot)
-        print('Telegram log failed with status: ${response.statusCode} - ${response.body}');
+        if (kDebugMode) {
+          print('Telegram log failed with status: ${response.statusCode} - ${response.body}');
+        }
         allSucceeded = false;
       }
     } catch (e) {
       // Gracefully catches SocketException (no network), TimeoutException, ClientException
-      print('Telegram log delivery error (swallowed to prevent crash): $e');
+      if (kDebugMode) {
+        print('Telegram log delivery error (swallowed to prevent crash): $e');
+      }
       allSucceeded = false;
     }
   }

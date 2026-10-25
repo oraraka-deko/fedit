@@ -1,5 +1,4 @@
 import 'package:code_forge/code_forge.dart';
-import 'package:code_forge/code_forge/controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -70,7 +69,7 @@ class _CodeForgeVirtualKeyboardBarState
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 4,
             offset: const Offset(0, -2),
           ),
@@ -134,7 +133,7 @@ class _CodeForgeVirtualKeyboardBarState
               scrollDirection: Axis.horizontal,
               physics: const BouncingScrollPhysics(),
               itemCount: KeyboardBarCategory.values.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 4),
+              separatorBuilder: (_, _) => const SizedBox(width: 4),
               itemBuilder: (context, index) {
                 final cat = KeyboardBarCategory.values[index];
                 final isSelected = _activeCategory == cat;
@@ -197,7 +196,7 @@ class _CodeForgeVirtualKeyboardBarState
           color: isActive ? activeColor : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
           border: Border.all(
-            color: isActive ? activeColor : Colors.grey.withOpacity(0.4),
+            color: isActive ? activeColor : Colors.grey.withValues(alpha: 0.4),
             width: 1,
           ),
         ),

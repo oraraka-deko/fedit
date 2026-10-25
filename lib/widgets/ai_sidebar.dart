@@ -274,7 +274,7 @@ class _AiSidebarState extends State<AiSidebar> with TickerProviderStateMixin {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      value: activeThreadId,
+                      initialValue: activeThreadId,
                       isDense: true,
                       decoration: const InputDecoration(
                         labelText: 'Thread',
@@ -306,7 +306,7 @@ class _AiSidebarState extends State<AiSidebar> with TickerProviderStateMixin {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      value: selectedModel.isEmpty
+                      initialValue: selectedModel.isEmpty
                           ? (dropdownModels.isEmpty ? null : dropdownModels.first)
                           : selectedModel,
                       isDense: true,

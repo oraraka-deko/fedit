@@ -401,14 +401,17 @@ class _RemoteLoaderPageState extends State<RemoteLoaderPage>
 
   Future<bool> _hasAllFilesAccess() async {
     if (!Platform.isAndroid) return true;
+bool status=false;
     try {
-      return await _storagePermissionChannel.invokeMethod<bool>(
+ status =await Permission.manageExternalStorage.isGranted;
+if (!status)await Permission.manageExternalStorage.request(); 
+return status;
+    } catch (_) {
+            return await _storagePermissionChannel.invokeMethod<bool>(
             'isExternalStorageManager',
           ) ??
           false;
-    } catch (_) {
-      return false;
-    }
+ }
   }
 
   Future<bool> _requiresAllFilesAccess(String targetPath) async {
@@ -450,21 +453,20 @@ class _RemoteLoaderPageState extends State<RemoteLoaderPage>
         false;
 
     if (!openSettings) return false;
-
+final status =  Permission.manageExternalStorage.request();
     try {
-      await _storagePermissionChannel
-          .invokeMethod('openManageAllFilesAccessSettings');
+ await status;
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open Android settings')),
-        );
+             await _storagePermissionChannel
+          .invokeMethod('openManageAllFilesAccessSettings');
+
       }
-      return false;
+      return await Permission.manageExternalStorage.isGranted;
     }
 
     await _waitUntilResumed();
-    final granted = await _hasAllFilesAccess();
+    final granted = await status.isGranted;
     if (!granted && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

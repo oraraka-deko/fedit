@@ -128,7 +128,7 @@ class _CodeForgeTabBarState extends State<CodeForgeTabBar> {
                 physics: const BouncingScrollPhysics(),
                 buildDefaultDragHandles: false,
                 itemCount: widget.tabs.length,
-                onReorder: (oldIndex, newIndex) {
+                onReorderItem: (oldIndex, newIndex) {
                   HapticFeedback.mediumImpact();
                   if (widget.onTabsReordered != null) {
                     widget.onTabsReordered!(oldIndex, newIndex);
