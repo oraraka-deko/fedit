@@ -114,6 +114,13 @@ class RepoUtils {
       onProgress?.call(1.0, 'Repository cloned successfully');
       return destination.path;
     } catch (gitError) {
+      // Clean up any failed or partial clone artifacts in destination
+      if (destination.existsSync()) {
+        try {
+          destination.deleteSync(recursive: true);
+        } catch (_) {}
+      }
+
       // If git clone fails (e.g. invalid git protocol, corporate firewall, etc.)
       // and this is a public GitHub repository without custom auth, attempt zip archive fallback.
       if (authSpec != null && authSpec.mode != AuthMode.none) {
@@ -149,29 +156,68 @@ class RepoUtils {
         destination.createSync(recursive: true);
       }
 
+      // Detect if all archive entries share a top-level root folder (e.g. <repo>-<branch>/)
+      String? commonPrefix;
+      if (archive.isNotEmpty) {
+        final firstPath = archive.first.name.replaceAll(r'\', '/');
+        final slashIndex = firstPath.indexOf('/');
+        if (slashIndex != -1) {
+          final prefixCandidate = firstPath.substring(0, slashIndex + 1);
+          final allMatch = archive.every(
+            (f) => f.name.replaceAll(r'\', '/').startsWith(prefixCandidate),
+          );
+          if (allMatch) {
+            commonPrefix = prefixCandidate;
+          }
+        }
+      }
+
       for (var i = 0; i < archive.length; i++) {
         final file = archive[i];
-        final filename = file.name;
+        var filename = file.name.replaceAll(r'\', '/');
+
+        if (commonPrefix != null) {
+          if (filename == commonPrefix || filename == commonPrefix.substring(0, commonPrefix.length - 1)) {
+            continue; // Skip root folder entry itself
+          }
+          if (filename.startsWith(commonPrefix)) {
+            filename = filename.substring(commonPrefix.length);
+          }
+        }
+
+        if (filename.isEmpty) continue;
+
+        final targetPath = p.join(destination.path, filename);
         if (file.isFile) {
           final data = file.content as List<int>;
-          final targetFile = File(p.join(destination.path, filename));
+          final targetFile = File(targetPath);
           targetFile.createSync(recursive: true);
           targetFile.writeAsBytesSync(data);
         } else {
-          Directory(p.join(destination.path, filename)).createSync(recursive: true);
+          Directory(targetPath).createSync(recursive: true);
         }
 
-        final progress = 0.3 + ((i + 1) / archive.length) * 0.7;
+        final progress = 0.3 + ((i + 1) / archive.length) * 0.6;
         onProgress?.call(progress.clamp(0.0, 1.0), 'Extracting archive: $filename');
       }
 
-      final entities = destination.listSync();
-      if (entities.length == 1 && entities.first is Directory) {
-        onProgress?.call(1.0, 'Extraction complete');
-        return (entities.first as Directory).path;
+      // Initialize local Git repository with origin pointing to remote
+      try {
+        await _gitService.initRepository(
+          path: destination.path,
+          initialHead: branch ?? 'main',
+          author: author,
+        );
+        await _gitService.addRemote(
+          destination.path,
+          name: 'origin',
+          url: repoUrl,
+        );
+      } catch (_) {
+        // Non-critical; workspace remains valid with extracted files
       }
 
-      onProgress?.call(1.0, 'Extraction complete');
+      onProgress?.call(1.0, 'Repository cloned successfully');
       return destination.path;
     }
   }

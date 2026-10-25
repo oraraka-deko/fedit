@@ -199,6 +199,28 @@ void main() {
       await scm.createBranch('dev');
       expect(scm.currentBranch, 'dev');
 
+      // Test commit and undo commit
+      File(p.join(tempDir.path, 'dev.dart')).writeAsStringSync('class Dev {}\n');
+      await scm.stage('dev.dart');
+      await scm.commit(message: 'Commit to undo');
+      expect(scm.recentCommits.first.summary, 'Commit to undo');
+
+      await scm.undoCommit(soft: true);
+      expect(scm.recentCommits.first.summary, 'Add App class');
+      expect(scm.stagedChanges.any((c) => c.path == 'dev.dart'), true);
+
+      // Test remotes
+      await scm.addRemote(name: 'origin', url: 'https://github.com/example/repo.git');
+      expect(scm.remotes.any((r) => r.name == 'origin'), true);
+
+      await scm.setRemoteUrl(name: 'origin', url: 'https://github.com/example/updated.git');
+      expect(scm.remotes.firstWhere((r) => r.name == 'origin').fetchUrl, 'https://github.com/example/updated.git');
+
+      // Verify commit branch annotations
+      final commitsWithTags = await gitService.getCommits(tempDir.path);
+      expect(commitsWithTags.first.isHead, true);
+      expect(commitsWithTags.first.branchNames.isNotEmpty, true);
+
       scm.dispose();
     });
   });

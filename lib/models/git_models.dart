@@ -42,6 +42,7 @@ class AuthSpec {
   }
 
   Callbacks toCallbacks({
+    CertificateCheck? certificateCheck,
     void Function(TransferProgress progress)? transferProgress,
     void Function(String message, int length, void payload)? sidebandProgress,
     void Function(String refname, Oid oldOid, Oid newOid)? updateTips,
@@ -49,6 +50,7 @@ class AuthSpec {
   }) {
     return Callbacks(
       credentials: _credentials(),
+      certificateCheck: certificateCheck ?? (cert, host, {required valid}) => true,
       transferProgress: transferProgress,
       sidebandProgress: sidebandProgress,
       updateTips: updateTips,
@@ -342,6 +344,8 @@ class GitBranchData {
   /// Upstream branch shorthand if configured.
   final String? upstreamName;
 
+  String? get upstreamBranch => upstreamName;
+
   /// Number of commits ahead of upstream.
   final int ahead;
 
@@ -375,6 +379,9 @@ class GitCommitSummary {
     required this.time,
     required this.parentCount,
     required this.parentShas,
+    this.branchNames = const [],
+    this.remoteBranchNames = const [],
+    this.isHead = false,
   });
 
   final String sha;
@@ -385,6 +392,9 @@ class GitCommitSummary {
   final DateTime time;
   final int parentCount;
   final List<String> parentShas;
+  final List<String> branchNames;
+  final List<String> remoteBranchNames;
+  final bool isHead;
 
   String get message => summary;
   DateTime get committedAt => time;

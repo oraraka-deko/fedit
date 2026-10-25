@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:fedit/models/git_models.dart';
 import 'package:fedit/services/git_service.dart';
@@ -53,6 +54,10 @@ class SourceControlManager extends ChangeNotifier {
   AuthSpec _authSpec = const AuthSpec.none();
   GitAuthor _author = GitAuthor.defaultAuthor;
 
+  // Real-time File System Watcher
+  StreamSubscription<FileSystemEvent>? _watcherSub;
+  Timer? _debounceTimer;
+
   // Getters
   GitService get gitService => _git;
   String? get workspacePath => _workspacePath;
@@ -105,7 +110,45 @@ class SourceControlManager extends ChangeNotifier {
     _lastError = null;
     notifyListeners();
 
+    _startWatcher();
     await _detectAndRefresh();
+  }
+
+  void _startWatcher() {
+    _stopWatcher();
+    final path = _workspacePath;
+    if (path == null) return;
+    final dir = Directory(path);
+    if (!dir.existsSync()) return;
+
+    try {
+      _watcherSub = dir.watch(recursive: true).listen((event) {
+        final p = event.path.replaceAll(r'\', '/');
+        // Ignore git internals unless index or refs changed
+        if (p.contains('/.git/')) {
+          if (!p.endsWith('/.git/index') &&
+              !p.endsWith('/.git/HEAD') &&
+              !p.contains('/.git/refs/')) {
+            return;
+          }
+        }
+        _debounceTimer?.cancel();
+        _debounceTimer = Timer(const Duration(milliseconds: 300), () {
+          if (_repoRootPath != null && !_isBusy) {
+            _refreshStatusOnly();
+          }
+        });
+      });
+    } catch (_) {
+      // Watching not supported or permission denied on some systems
+    }
+  }
+
+  void _stopWatcher() {
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    _watcherSub?.cancel();
+    _watcherSub = null;
   }
 
   /// Initializes a new repository in current workspace.
@@ -332,6 +375,28 @@ class SourceControlManager extends ChangeNotifier {
     });
   }
 
+  /// Undoes the last commit on the current branch (soft or mixed reset).
+  Future<void> undoCommit({bool soft = true}) async {
+    final repo = _requireRepo();
+    await _runAction('Undoing last commit', () async {
+      await _git.undoCommit(repo, soft: soft);
+      _events.add(GitOperationEvent.info('Undid last commit'));
+      await _refreshStatusOnly();
+    });
+  }
+
+  /// Commits changes and immediately pushes to remote.
+  Future<void> commitAndPush({String? message}) async {
+    await commit(message: message);
+    await push();
+  }
+
+  /// Commits changes and immediately syncs with remote.
+  Future<void> commitAndSync({String? message}) async {
+    await commit(message: message);
+    await sync();
+  }
+
   // ===========================================================================
   // Branches
   // ===========================================================================
@@ -465,12 +530,76 @@ class SourceControlManager extends ChangeNotifier {
     });
   }
 
+  /// Applies stash at [index].
+  Future<void> applyStash([int index = 0]) async {
+    final repo = _requireRepo();
+    await _runAction('Applying stash #$index', () async {
+      await _git.applyStash(repo, index: index);
+      _events.add(GitOperationEvent.info('Applied stash #$index'));
+      await _refreshStatusOnly();
+    });
+  }
+
   /// Drops stash at [index].
   Future<void> dropStash([int index = 0]) async {
     final repo = _requireRepo();
     await _runAction('Dropping stash #$index', () async {
       await _git.dropStash(repo, index: index);
       _events.add(GitOperationEvent.info('Dropped stash #$index'));
+      await _refreshStatusOnly();
+    });
+  }
+
+  // ===========================================================================
+  // Remotes & Rebase
+  // ===========================================================================
+
+  /// Adds a new remote repository reference.
+  Future<void> addRemote({required String name, required String url}) async {
+    final repo = _requireRepo();
+    await _runAction('Adding remote $name', () async {
+      await _git.addRemote(repo, name: name, url: url);
+      _events.add(GitOperationEvent.info('Added remote $name ($url)'));
+      await _refreshStatusOnly();
+    });
+  }
+
+  /// Removes an existing remote repository reference.
+  Future<void> removeRemote({required String name}) async {
+    final repo = _requireRepo();
+    await _runAction('Removing remote $name', () async {
+      await _git.removeRemote(repo, name: name);
+      _events.add(GitOperationEvent.info('Removed remote $name'));
+      await _refreshStatusOnly();
+    });
+  }
+
+  /// Updates URL of an existing remote.
+  Future<void> setRemoteUrl({required String name, required String url}) async {
+    final repo = _requireRepo();
+    await _runAction('Updating remote $name URL', () async {
+      await _git.setRemoteUrl(repo, name: name, url: url);
+      _events.add(GitOperationEvent.info('Updated remote $name URL'));
+      await _refreshStatusOnly();
+    });
+  }
+
+  /// Rebases the current branch onto [upstreamBranch].
+  Future<void> rebase({required String upstreamBranch}) async {
+    final repo = _requireRepo();
+    await _runAction('Rebasing onto $upstreamBranch', () async {
+      await _git.rebase(repo, upstreamBranch: upstreamBranch, author: _author);
+      _events.add(GitOperationEvent.info('Rebased onto $upstreamBranch'));
+      await _refreshStatusOnly();
+    });
+  }
+
+  /// Aborts an in-progress rebase operation.
+  Future<void> abortRebase() async {
+    final repo = _requireRepo();
+    await _runAction('Aborting rebase', () async {
+      await _git.abortRebase(repo);
+      _events.add(GitOperationEvent.info('Aborted rebase'));
       await _refreshStatusOnly();
     });
   }
@@ -557,6 +686,7 @@ class SourceControlManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopWatcher();
     commitMessageController.dispose();
     super.dispose();
   }

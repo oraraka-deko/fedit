@@ -681,7 +681,7 @@ class GitService {
     });
   }
 
-  /// Retrieves paginated commit history.
+  /// Retrieves paginated commit history with branch and remote mapping.
   Future<List<GitCommitSummary>> getCommits(
     String repoPath, {
     int limit = 50,
@@ -708,32 +708,116 @@ class GitService {
           head.free();
         }
 
-        final allCommits = repo.log(oid: startOid);
-        final selected = allCommits.skip(skip).take(limit).toList();
+        final localBranchMap = <String, List<String>>{};
+        final remoteBranchMap = <String, List<String>>{};
+        String? headSha;
+        try {
+          if (!repo.isBranchUnborn) {
+            headSha = repo.head.target.sha;
+          }
+        } catch (_) {}
+
+        for (final b in repo.branches) {
+          try {
+            final sha = b.target.sha;
+            bool isRemote = false;
+            try {
+              b.remoteName;
+              isRemote = true;
+            } catch (_) {}
+            if (isRemote) {
+              remoteBranchMap.putIfAbsent(sha, () => []).add(b.name);
+            } else {
+              localBranchMap.putIfAbsent(sha, () => []).add(b.name);
+            }
+          } catch (_) {}
+        }
+
+        final seenShas = <String>{};
+        final collectedCommits = <Commit>[];
+
+        void addFromOid(Oid oid) {
+          try {
+            final list = repo.log(oid: oid);
+            for (final c in list) {
+              if (seenShas.add(c.oid.sha)) {
+                collectedCommits.add(c);
+              } else {
+                c.free();
+              }
+            }
+          } catch (_) {}
+        }
+
+        addFromOid(startOid);
+
+        // Include tips from other branches (e.g. remote tracking branches)
+        for (final b in repo.branches) {
+          try {
+            if (b.target != startOid) {
+              addFromOid(b.target);
+            }
+          } catch (_) {}
+        }
+
+        collectedCommits.sort((a, b) => b.time.compareTo(a.time));
+        final selected = collectedCommits.skip(skip).take(limit).toList();
 
         final summaries = <GitCommitSummary>[];
         for (final c in selected) {
           final author = c.author;
+          final cSha = c.oid.sha;
           summaries.add(
             GitCommitSummary(
-              sha: c.oid.sha,
-              shortSha: c.oid.sha.substring(0, 7),
+              sha: cSha,
+              shortSha: cSha.length >= 7 ? cSha.substring(0, 7) : cSha,
               summary: c.summary,
               authorName: author.name,
               authorEmail: author.email,
               time: DateTime.fromMillisecondsSinceEpoch(c.time * 1000),
               parentCount: c.parents.length,
               parentShas: c.parents.map((p) => p.sha).toList(),
+              branchNames: localBranchMap[cSha] ?? const [],
+              remoteBranchNames: remoteBranchMap[cSha] ?? const [],
+              isHead: headSha != null && headSha == cSha,
             ),
           );
           author.free();
         }
 
-        for (final c in allCommits) {
+        for (final c in collectedCommits) {
           c.free();
         }
 
         return summaries;
+      } finally {
+        repo.free();
+      }
+    });
+  }
+
+  /// Undoes the last commit on the current branch (`git reset --soft HEAD~1` or `--mixed`).
+  Future<void> undoCommit(String repoPath, {bool soft = true}) async {
+    return Isolate.run(() {
+      final repo = Repository.open(repoPath);
+      try {
+        if (repo.isBranchUnborn) {
+          throw StateError('Cannot undo commit: repository has no commits.');
+        }
+        final headRef = repo.head;
+        final headCommit = Commit.lookup(repo: repo, oid: headRef.target);
+        if (headCommit.parents.isEmpty) {
+          headCommit.free();
+          headRef.free();
+          throw StateError('Cannot undo commit: initial commit has no parent.');
+        }
+        final parentOid = headCommit.parents.first;
+        repo.reset(
+          oid: parentOid,
+          resetType: soft ? GitReset.soft : GitReset.mixed,
+        );
+        headCommit.free();
+        headRef.free();
       } finally {
         repo.free();
       }
@@ -1064,6 +1148,22 @@ class GitService {
     });
   }
 
+  /// Updates the URL of an existing remote (`git remote set-url <name> <url>`).
+  Future<void> setRemoteUrl(
+    String repoPath, {
+    required String name,
+    required String url,
+  }) async {
+    await Isolate.run(() {
+      final repo = Repository.open(repoPath);
+      try {
+        Remote.setUrl(repo: repo, remote: name, url: url);
+      } finally {
+        repo.free();
+      }
+    });
+  }
+
   /// Fetches from remote (`git fetch <remote>`).
   Future<void> fetch(
     String repoPath, {
@@ -1191,6 +1291,67 @@ class GitService {
             }
             b.free();
           }
+        }
+      } finally {
+        repo.free();
+      }
+    });
+  }
+
+  /// Rebases the current branch onto [upstreamBranch].
+  Future<void> rebase(
+    String repoPath, {
+    required String upstreamBranch,
+    GitAuthor? author,
+  }) async {
+    return Isolate.run(() {
+      final repo = Repository.open(repoPath);
+      try {
+        final upstream = AnnotatedCommit.fromRevSpec(
+          repo: repo,
+          spec: upstreamBranch,
+        );
+        final rebase = Rebase.init(
+          repo: repo,
+          upstream: upstream,
+        );
+        try {
+          final auth = author ?? GitAuthor.defaultAuthor;
+          final sig = Signature.create(
+            name: auth.name,
+            email: auth.email,
+            time: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            offset: 0,
+          );
+          try {
+            final opCount = rebase.operations.length;
+            for (var i = 0; i < opCount; i++) {
+              rebase.next();
+              rebase.commit(committer: sig);
+            }
+            rebase.finish();
+          } finally {
+            sig.free();
+          }
+        } finally {
+          rebase.free();
+        }
+      } finally {
+        repo.free();
+      }
+    });
+  }
+
+  /// Aborts an in-progress rebase operation (`git rebase --abort`).
+  Future<void> abortRebase(String repoPath) async {
+    return Isolate.run(() {
+      final repo = Repository.open(repoPath);
+      try {
+        final rebase = Rebase.open(repo);
+        try {
+          rebase.abort();
+        } finally {
+          rebase.free();
         }
       } finally {
         repo.free();
