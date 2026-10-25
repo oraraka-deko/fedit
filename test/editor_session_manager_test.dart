@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fedit/models/git_models.dart';
 import 'package:fedit/widgets/editor_session_manager.dart';
 
 void main() {
@@ -83,6 +84,38 @@ void main() {
       expect(manager.getLastActiveLine(tabAId), 10);
       expect(manager.getLastActiveLine(tabBId), 20);
     });
+
+    test('openDiffView creates diff tab and switches to it without duplicating', () {
+      manager.openFile(fileA);
+      expect(manager.documents.length, 1);
+
+      manager.openDiffView(
+        relativePath: 'lib/file_a.dart',
+        fullPath: fileA.path,
+        originalContent: 'old content',
+        modifiedContent: 'new content',
+        fileDiff: GitFileDiff.empty,
+        isStaged: false,
+      );
+
+      expect(manager.documents.length, 2);
+      final activeDoc = manager.activeDocument;
+      expect(activeDoc, isNotNull);
+      expect(activeDoc!.isDiff, isTrue);
+      expect(activeDoc.tab.title, contains('(Working Tree)'));
+      expect(activeDoc.diff!.originalContent, 'old content');
+      expect(activeDoc.diff!.modifiedContent, 'new content');
+
+      // Calling openDiffView for the same path activates existing tab without adding new one
+      manager.openDiffView(
+        relativePath: 'lib/file_a.dart',
+        fullPath: fileA.path,
+        originalContent: 'old content',
+        modifiedContent: 'new content',
+        fileDiff: GitFileDiff.empty,
+        isStaged: false,
+      );
+      expect(manager.documents.length, 2);
+    });
   });
 }
-

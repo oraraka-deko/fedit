@@ -3,21 +3,49 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
+import '../models/git_models.dart';
 import 'dynamic_code_editor_tab_bar.dart';
+
+/// Information needed to display a side-by-side or inline Git diff.
+class DiffDocumentInfo {
+  final String relativePath;
+  final String fullPath;
+  final bool isStaged;
+  final String originalContent;
+  final String modifiedContent;
+  final GitFileDiff fileDiff;
+
+  const DiffDocumentInfo({
+    required this.relativePath,
+    required this.fullPath,
+    this.isStaged = false,
+    required this.originalContent,
+    required this.modifiedContent,
+    required this.fileDiff,
+  });
+}
 
 class OpenDocument {
   final EditorTabItem tab;
   final File? file;
+  final DiffDocumentInfo? diff;
   int lastActiveLine;
 
   OpenDocument({
     required this.tab,
     this.file,
+    this.diff,
     this.lastActiveLine = 0,
   });
+
+  bool get isDiff => diff != null;
 }
 
 class EditorSessionManager extends ChangeNotifier {
+  static int _tabCounter = 0;
+  static String _generateTabId([String prefix = 'tab']) =>
+      '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${_tabCounter++}';
+
   final List<OpenDocument> _documents = [];
   final Map<String, int> _lastActiveLinesByPath = {};
   String _activeTabId = '';
@@ -66,14 +94,14 @@ class EditorSessionManager extends ChangeNotifier {
   }
 
   void openFile(File file) {
-    final existingIndex = _documents.indexWhere((d) => d.file?.path == file.path);
+    final existingIndex = _documents.indexWhere((d) => !d.isDiff && d.file?.path == file.path);
     if (existingIndex != -1) {
       _activeTabId = _documents[existingIndex].tab.id;
       notifyListeners();
       return;
     }
 
-    final tabId = DateTime.now().microsecondsSinceEpoch.toString();
+    final tabId = _generateTabId('file');
     final tab = EditorTabItem(
       id: tabId,
       title: p.basename(file.path),
@@ -86,8 +114,46 @@ class EditorSessionManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  void openDiffView({
+    required String relativePath,
+    required String fullPath,
+    required String originalContent,
+    required String modifiedContent,
+    required GitFileDiff fileDiff,
+    bool isStaged = false,
+  }) {
+    final diffId = 'diff:${isStaged ? "staged" : "workdir"}:$relativePath';
+    final existingIndex = _documents.indexWhere((d) => d.tab.id == diffId);
+    if (existingIndex != -1) {
+      _activeTabId = diffId;
+      notifyListeners();
+      return;
+    }
+
+    final filename = p.basename(relativePath);
+    final statusSuffix = isStaged ? '(Index)' : '(Working Tree)';
+    final tab = EditorTabItem(
+      id: diffId,
+      title: '$filename $statusSuffix',
+      filePath: fullPath,
+    );
+
+    final diffInfo = DiffDocumentInfo(
+      relativePath: relativePath,
+      fullPath: fullPath,
+      isStaged: isStaged,
+      originalContent: originalContent,
+      modifiedContent: modifiedContent,
+      fileDiff: fileDiff,
+    );
+
+    _documents.add(OpenDocument(tab: tab, file: File(fullPath), diff: diffInfo));
+    _activeTabId = diffId;
+    notifyListeners();
+  }
+
   void openNewEmptyTab() {
-    final tabId = DateTime.now().microsecondsSinceEpoch.toString();
+    final tabId = _generateTabId('file');
     final tab = EditorTabItem(
       id: tabId,
       title: 'Untitled-${_documents.length + 1}',
@@ -109,7 +175,7 @@ class EditorSessionManager extends ChangeNotifier {
     if (index == -1) return;
 
     final doc = _documents[index];
-    if (doc.file != null) {
+    if (doc.file != null && !doc.isDiff) {
       _lastActiveLinesByPath[doc.file!.path] = doc.lastActiveLine;
     }
 

@@ -219,6 +219,26 @@ class GitFileStatus {
     final idx = path.lastIndexOf('/');
     return idx == -1 ? '' : path.substring(0, idx);
   }
+
+  /// Single letter status abbreviation matching VS Code Source Control (M, A, D, U, C, R).
+  String get statusLetter {
+    if (isConflicted) return 'C';
+    if (isUntracked) return 'U';
+    if (isAdded) return 'A';
+    if (isDeleted) return 'D';
+    if (isRenamed) return 'R';
+    return 'M';
+  }
+
+  /// ARGB integer color corresponding to git change status.
+  int get statusColor {
+    if (isConflicted) return 0xFFF44336; // Red
+    if (isUntracked) return 0xFF73C991; // Green
+    if (isAdded) return 0xFF89D185; // Green
+    if (isDeleted) return 0xFFF14C4C; // Red
+    if (isRenamed) return 0xFF58A6FF; // Blue
+    return 0xFFE2C08D; // Orange/amber
+  }
 }
 
 /// Full status snapshot of a workspace repository matching VS Code Source Control.
@@ -365,6 +385,9 @@ class GitCommitSummary {
   final DateTime time;
   final int parentCount;
   final List<String> parentShas;
+
+  String get message => summary;
+  DateTime get committedAt => time;
 }
 
 /// Detailed commit info including message and stats.
@@ -495,6 +518,8 @@ class GitFileDiff {
   final int additions;
   final int deletions;
   final List<GitDiffHunk> hunks;
+
+  int get insertions => additions;
 
   static const empty = GitFileDiff(
     oldPath: '',
